@@ -1,0 +1,52 @@
+name: Code Similarity Check
+
+on:
+  push:
+    branches: ["**"]
+    paths:
+      - "api/**"
+      - "src/**"
+      - "scripts/check_similarity.py"
+  pull_request:
+    paths:
+      - "api/**"
+      - "src/**"
+      - "scripts/check_similarity.py"
+  workflow_dispatch:
+
+jobs:
+  similarity-check:
+    name: Check code originality vs GitHub
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python 3.11
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install dependencies
+        run: pip install requests
+
+      - name: Run similarity checker and save report
+        env:
+          # GITHUB_TOKEN is automatically provided by Actions and gives
+          # a higher rate-limit for the Code Search API.
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          python scripts/check_similarity.py \
+            --threshold 0.6 \
+            --verbose 2>&1 | tee similarity_report.txt; exit ${PIPESTATUS[0]}
+
+      - name: Save report as artifact
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: similarity-report
+          path: similarity_report.txt
+          retention-days: 30
