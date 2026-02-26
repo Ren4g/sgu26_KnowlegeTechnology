@@ -1,0 +1,40 @@
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+*.egg-info/
+dist/
+build/
+.eggs/
+*.egg
+.venv/
+venv/
+env/
+
+# Jupyter
+.ipynb_checkpoints/
+
+# Models (large binary files)
+models/*.pkl
+models/*.joblib
+
+# Data (raw/processed CSVs can be large)
+data/raw/
+data/processed/
+
+# Environment
+.env
+.env.*
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Node (frontend)
+frontend/node_modules/
+frontend/build/
+frontend/.env*
+
+# Similarity report artifact
+similarity_report.txt
