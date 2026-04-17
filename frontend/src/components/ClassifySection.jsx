@@ -17,6 +17,11 @@ const SAMPLE_TEXTS = [
   "World leaders gather at the UN summit to discuss climate change and international security.",
 ];
 
+const API_BASE_URL = process.env.REACT_APP_API_BASE_URL
+  ? process.env.REACT_APP_API_BASE_URL.replace(/\/$/, "")
+  : "";
+const CLASSIFY_ENDPOINT = API_BASE_URL ? `${API_BASE_URL}/classify` : "/api/classify";
+
 const ClassifySection = () => {
   const [text, setText] = useState("");
   const [result, setResult] = useState(null);
@@ -30,10 +35,10 @@ const ClassifySection = () => {
     if (!text.trim()) { setError("Please enter some text first."); return; }
     setLoading(true); setError(""); setResult(null); setShowDetails(false);
     try {
-      const res = await axios.post("http://localhost:8000/classify", { text });
+      const res = await axios.post(CLASSIFY_ENDPOINT, { text });
       setResult(res.data);
     } catch {
-      setError("⚠️ Cannot connect to API server. Make sure: uvicorn api.classify_api:app --reload --port 8000 is running.");
+      setError("⚠️ Cannot connect to API server. If running locally, set REACT_APP_API_BASE_URL=http://localhost:8000.");
     } finally {
       setLoading(false);
     }

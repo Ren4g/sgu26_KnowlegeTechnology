@@ -1,19 +1,12 @@
 from fastapi import FastAPI
+from fastapi import HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
-import joblib
+import json
+import math
+import re
 import requests
-import nltk
-from nltk.corpus import wordnet
-from nltk.tokenize import word_tokenize
 import os
-
-# Download NLTK data if needed
-for pkg in ['wordnet', 'punkt', 'omw-1.4', 'punkt_tab']:
-    try:
-        nltk.data.find(f'corpora/{pkg}' if pkg in ['wordnet','omw-1.4'] else f'tokenizers/{pkg}')
-    except LookupError:
-        nltk.download(pkg, quiet=True)
 
 app = FastAPI(title="Semantic Text Classifier API")
 
@@ -25,12 +18,23 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# Load models
 current_dir = os.path.dirname(os.path.abspath(__file__))
-models_dir = os.path.join(current_dir, '..', 'models')
+model_artifact = None
+model_load_error = None
+TOKEN_PATTERN = re.compile(r"(?u)\b\w\w+\b")
+wordnet_mappings = None
 
-vectorizer = joblib.load(os.path.join(models_dir, "tfidf_vectorizer.pkl"))
-model = joblib.load(os.path.join(models_dir, "best_classifier.pkl"))
+# Load lightweight WordNet mappings for serverless compatibility
+def load_wordnet_mappings():
+    global wordnet_mappings
+    if wordnet_mappings is not None:
+        return
+    try:
+        mappings_path = os.path.join(current_dir, "wordnet_mappings.json")
+        with open(mappings_path, "r", encoding="utf-8") as f:
+            wordnet_mappings = json.load(f)
+    except Exception:
+        wordnet_mappings = {}
 
 label_dict = {
     1: {"label": "World",    "emoji": "🌍", "color": "#06b6d4"},
@@ -40,17 +44,91 @@ label_dict = {
 }
 
 def enrich_with_wordnet(text):
-    enriched_words = []
-    words = word_tokenize(str(text))
-    for word in words:
-        synsets = wordnet.synsets(word)
-        if synsets:
-            primary_synset = synsets[0]
-            for lemma in primary_synset.lemmas()[:1]:
-                enriched_words.append(lemma.name().replace('_', ' '))
-            for hypernym in primary_synset.hypernyms()[:1]:
-                enriched_words.append(hypernym.lemmas()[0].name().replace('_', ' '))
-    return ' '.join(set(enriched_words))
+    load_wordnet_mappings()
+    try:
+        enriched_words = []
+        words = re.findall(r'\b\w+\b', str(text).lower())
+        for word in words:
+            # Look up word in lightweight mappings
+            if word in wordnet_mappings:
+                enriched_words.append(wordnet_mappings[word])
+        return ' '.join(enriched_words) if enriched_words else ""
+    except Exception:
+        return ""
+
+
+def _models_dir_candidates():
+    return [
+        current_dir,
+        os.path.join(current_dir, "..", "models"),
+        os.path.join(current_dir, "models"),
+    ]
+
+
+def load_model_artifacts():
+    global model_artifact, model_load_error
+    if model_artifact is not None:
+        return True
+
+    last_error = None
+    for models_dir in _models_dir_candidates():
+        try:
+            artifact_path = os.path.join(models_dir, "model_data.json")
+            if not os.path.exists(artifact_path):
+                continue
+
+            with open(artifact_path, "r", encoding="utf-8") as handle:
+                model_artifact = json.load(handle)
+            model_load_error = None
+            return True
+        except Exception as exc:
+            last_error = exc
+
+    model_load_error = str(last_error) if last_error else "Model files not found"
+    return False
+
+
+def _tokenize(text):
+    lowered = str(text).lower()
+    return TOKEN_PATTERN.findall(lowered)
+
+
+def _predict_category(combined_text):
+    artifact = model_artifact
+    vocabulary = artifact["vocabulary"]
+    idf = artifact["idf"]
+    coefficients = artifact["coef"]
+    intercept = artifact["intercept"]
+    classes = artifact["classes"]
+
+    counts = {}
+    for token in _tokenize(combined_text):
+        index = vocabulary.get(token)
+        if index is not None:
+            counts[index] = counts.get(index, 0) + 1
+
+    if not counts:
+        scores = list(intercept)
+        best_index = max(range(len(scores)), key=lambda idx: scores[idx])
+        return classes[best_index], scores, None
+
+    weighted_values = {}
+    norm_sq = 0.0
+    for index, count in counts.items():
+        tfidf_value = float(count) * float(idf[index])
+        weighted_values[index] = tfidf_value
+        norm_sq += tfidf_value * tfidf_value
+
+    norm = math.sqrt(norm_sq) if norm_sq > 0 else 1.0
+    scores = []
+    for class_index in range(len(classes)):
+        score = float(intercept[class_index])
+        for index, tfidf_value in weighted_values.items():
+            score += (tfidf_value / norm) * float(coefficients[class_index][index])
+        scores.append(score)
+
+    best_index = max(range(len(scores)), key=lambda idx: scores[idx])
+    return classes[best_index], scores, max(scores)
 
 def link_to_dbpedia(text):
     url = "https://api.dbpedia-spotlight.org/en/annotate"
@@ -70,22 +148,30 @@ class TextInput(BaseModel):
     text: str
 
 @app.get("/health")
+@app.get("/api/health")
 async def health():
-    return {"status": "ok"}
+    loaded = load_model_artifacts()
+    return {
+        "status": "ok" if loaded else "degraded",
+        "model_loaded": loaded,
+        "model_error": None if loaded else model_load_error,
+    }
 
 @app.post("/classify")
+@app.post("/api/classify")
 async def classify_text(input: TextInput):
+    if not load_model_artifacts():
+        raise HTTPException(status_code=500, detail=f"Model initialization failed: {model_load_error}")
+
     wordnet_feats = enrich_with_wordnet(input.text)
     dbpedia_feats = link_to_dbpedia(input.text)
     combined_text = f"{input.text} {wordnet_feats} {dbpedia_feats}"
 
-    input_vector = vectorizer.transform([combined_text])
-    prediction = model.predict(input_vector)[0]
+    prediction, scores, best_score = _predict_category(combined_text)
 
     confidence = None
-    if hasattr(model, "predict_proba"):
-        proba = model.predict_proba(input_vector)[0]
-        confidence = round(float(max(proba)) * 100, 2)
+    if best_score is not None:
+        confidence = round(float(100.0 / (1.0 + math.exp(-best_score))), 2)
 
     result = label_dict.get(int(prediction), {"label": "Unknown", "emoji": "❓", "color": "#fff"})
 

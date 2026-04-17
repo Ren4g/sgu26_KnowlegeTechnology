@@ -1,0 +1,7 @@
+{
+  "name": "sgu26-knowlege-technology-root",
+  "private": true,
+  "scripts": {
+    "build": "echo frontend build already present"
+  }
+}

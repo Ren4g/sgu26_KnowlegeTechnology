@@ -1,6 +1,6 @@
 import React from "react";
 import { motion } from "framer-motion";
-import { ArrowDown, Sparkles, Zap } from "lucide-react";
+import { ArrowDown } from "lucide-react";
 import ParticleBackground from "./ParticleBackground";
 
 const HeroSection = () => {
